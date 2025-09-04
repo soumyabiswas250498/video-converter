@@ -13,13 +13,25 @@ interface TranscoderProps {
   settings: OutputSettings;
 }
 
+interface VideoAnalysis {
+  inputWidth: number;
+  inputHeight: number;
+  scaleFactor: number;
+  duration: number;
+  inputFramerate: number;
+}
+
 export function Transcoder({ inputFile, settings }: TranscoderProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isTranscoding, setIsTranscoding] = useState(false);
   const [progress, setProgress] = useState(0);
   const [outputUrl, setOutputUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [debugInfo, setDebugInfo] = useState<string>('');
+  const [videoAnalysis, setVideoAnalysis] = useState<VideoAnalysis | null>(
+    null
+  );
+  const [ffmpegCommand, setFfmpegCommand] = useState<string>('');
+  const [logMessages, setLogMessages] = useState<string[]>([]); // ✅ NEW: Store FFmpeg logs
   const ffmpegRef = useRef(new FFmpeg());
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -29,6 +41,8 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
 
     ffmpeg.on('log', ({ message }) => {
       console.log('[FFmpeg Log]:', message);
+      // ✅ NEW: Store logs for display (keep last 50 messages for performance)
+      setLogMessages(prev => [...prev, message]);
     });
 
     ffmpeg.on('progress', ({ progress }) => {
@@ -36,7 +50,6 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
         console.log(`[FFmpeg Progress]: ${(progress * 100).toFixed(2)}%`);
         setProgress(progress * 100);
 
-        // Reset timeout when progress is made
         if (timeoutRef.current) {
           clearTimeout(timeoutRef.current);
           timeoutRef.current = null;
@@ -76,61 +89,86 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
     };
   }, []);
 
-  const analyzeVideo = async () => {
-    return new Promise<{
-      inputWidth: number;
-      inputHeight: number;
-      scaleFactor: number;
-      duration: number;
-    }>(resolve => {
-      const video = document.createElement('video');
-      const url = URL.createObjectURL(inputFile);
-      video.preload = 'metadata';
-      video.src = url;
+  // ✅ Analyze video whenever file or settings change
+  useEffect(() => {
+    const analyzeVideo = async () => {
+      if (!inputFile || !settings.resolution) return;
 
-      video.onloadedmetadata = () => {
-        const inputWidth = video.videoWidth;
-        const inputHeight = video.videoHeight;
-        const duration = video.duration;
+      console.log('[Video Analysis] Analyzing file and settings...');
 
-        const [outputWidth, outputHeight] = settings.resolution
-          .split('x')
-          .map(Number);
-        const scaleFactorX = inputWidth / outputWidth;
-        const scaleFactorY = inputHeight / outputHeight;
-        const maxScaleFactor = Math.max(scaleFactorX, scaleFactorY);
+      try {
+        const video = document.createElement('video');
+        const url = URL.createObjectURL(inputFile);
+        video.preload = 'metadata';
+        video.src = url;
 
-        const debugMessage = `Input: ${inputWidth}x${inputHeight}, ${Math.round(
-          duration
-        )}s → Output: ${outputWidth}x${outputHeight} (${maxScaleFactor.toFixed(
-          2
-        )}x downscale)`;
+        const analysis = await new Promise<VideoAnalysis>((resolve, reject) => {
+          video.onloadedmetadata = () => {
+            const inputWidth = video.videoWidth;
+            const inputHeight = video.videoHeight;
+            const duration = video.duration;
+            const inputFramerate = 30; // Default fallback
 
-        console.log(`[Video Analysis] ${debugMessage}`);
-        setDebugInfo(debugMessage);
-        URL.revokeObjectURL(url);
-        resolve({
-          inputWidth,
-          inputHeight,
-          scaleFactor: maxScaleFactor,
-          duration,
+            const [outputWidth, outputHeight] = settings.resolution
+              .split('x')
+              .map(Number);
+            const scaleFactorX = inputWidth / outputWidth;
+            const scaleFactorY = inputHeight / outputHeight;
+            const maxScaleFactor = Math.max(scaleFactorX, scaleFactorY);
+
+            URL.revokeObjectURL(url);
+            resolve({
+              inputWidth,
+              inputHeight,
+              scaleFactor: maxScaleFactor,
+              duration,
+              inputFramerate,
+            });
+          };
+
+          video.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error('Failed to analyze video'));
+          };
         });
-      };
 
-      video.onerror = () => {
-        URL.revokeObjectURL(url);
-        resolve({
-          inputWidth: 1920,
-          inputHeight: 1080,
-          scaleFactor: 1,
-          duration: 60,
-        });
-      };
-    });
-  };
+        setVideoAnalysis(analysis);
+
+        // ✅ Pre-generate FFmpeg command for display
+        const args = [
+          '-i',
+          `input.${inputFile.name.split('.').pop() || 'mp4'}`,
+          '-c:v',
+          'libx264',
+          '-preset',
+          'ultrafast',
+          '-vf',
+          `scale=${settings.resolution.replace('x', ':')}`,
+          '-r',
+          String(settings.framerate),
+          '-b:v',
+          `${settings.bitrate}k`,
+          '-c:a',
+          'copy',
+          ...(settings.audioMono ? ['-ac', '1'] : []),
+          'output.mp4',
+        ];
+        const commandDisplay = `ffmpeg ${args.join(' ')}`;
+        setFfmpegCommand(commandDisplay);
+
+        console.log('[Video Analysis] Complete:', analysis);
+      } catch (err) {
+        console.error('[Video Analysis Error]:', err);
+        setVideoAnalysis(null);
+        setFfmpegCommand('');
+      }
+    };
+
+    analyzeVideo();
+  }, [inputFile, settings]);
 
   const transcode = async () => {
-    if (!isLoaded || isTranscoding) return;
+    if (!isLoaded || isTranscoding || !videoAnalysis) return;
 
     const [widthStr, heightStr] = settings.resolution.split('x');
     const width = parseInt(widthStr, 10);
@@ -141,12 +179,11 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
       return;
     }
 
-    const { scaleFactor, duration } = await analyzeVideo();
-
     setIsTranscoding(true);
     setProgress(0);
     setOutputUrl(null);
     setError(null);
+    setLogMessages([]); // ✅ NEW: Clear logs when starting new transcoding
 
     console.log('[Transcoder] Starting transcoding...');
     console.log('[Transcoder] Input file:', inputFile.name);
@@ -159,47 +196,45 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
       await ffmpeg.writeFile(inputFilename, await fetchFile(inputFile));
       console.log('[FFmpeg] Input file written to virtual filesystem');
 
-      // **FIXED: Much more generous timeout based on your test results**
       const processingMultiplier =
-        scaleFactor > 2.5 ? 8 : scaleFactor > 1.5 ? 6 : 4;
-      const baseTimeout = 120000; // 2 minutes base
+        videoAnalysis.scaleFactor > 2.5
+          ? 8
+          : videoAnalysis.scaleFactor > 1.5
+          ? 6
+          : 4;
+      const baseTimeout = 120000;
       const timeoutDuration = Math.min(
-        duration * processingMultiplier * 1000 + baseTimeout,
-        600000 // Max 10 minutes
+        videoAnalysis.duration * processingMultiplier * 1000 + baseTimeout,
+        600000
       );
 
       console.log(
         `[FFmpeg] Setting timeout: ${Math.round(
           timeoutDuration / 1000
-        )}s for ${Math.round(duration)}s video`
+        )}s for ${Math.round(videoAnalysis.duration)}s video`
       );
 
-      // **KEY FIX: Audio copy instead of re-encoding**
       const args = [
         '-i',
         inputFilename,
-        // Video: transcode and scale
         '-c:v',
         'libx264',
         '-preset',
-        'ultrafast', // Fastest encoding
+        'ultrafast',
         '-vf',
         `scale=${settings.resolution.replace('x', ':')}`,
         '-r',
         String(settings.framerate),
         '-b:v',
         `${settings.bitrate}k`,
-        // **CRITICAL: Copy audio without re-encoding**
         '-c:a',
         'copy',
-        // Only apply mono conversion if specifically requested
         ...(settings.audioMono ? ['-ac', '1'] : []),
         'output.mp4',
       ];
 
       console.log('[FFmpeg] Command arguments:', args);
 
-      // Set timeout AFTER progress starts
       const startTimeout = () => {
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
         timeoutRef.current = setTimeout(() => {
@@ -213,12 +248,9 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
         }, timeoutDuration);
       };
 
-      // Start timeout
       startTimeout();
-
       await ffmpeg.exec(args);
 
-      // Clear timeout on success
       if (timeoutRef.current) {
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
@@ -254,13 +286,125 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
 
   return (
     <div className="mt-8 space-y-4">
-      {debugInfo && (
-        <div className="p-2 bg-blue-50 border border-blue-200 rounded text-xs">
-          <strong>Video Analysis:</strong> {debugInfo}
+      {/* Video Analysis Preview */}
+      {videoAnalysis && (
+        <div className="bg-gradient-to-r from-blue-50 to-purple-50 border border-blue-200 rounded-lg p-6 shadow-sm">
+          <div className="flex items-center gap-2 mb-4">
+            <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
+            <h3 className="font-semibold text-gray-800">Transcoding Preview</h3>
+          </div>
+
+          {/* Main Info Grid */}
+          <div className="grid md:grid-cols-2 gap-8 mb-4">
+            {/* Input Section */}
+            <div className="bg-white/60 rounded-lg p-4 border border-green-100">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-lg">📹</span>
+                <span className="font-medium text-green-700">Source</span>
+              </div>
+              <div className="space-y-2 text-sm text-gray-600">
+                <div className="flex justify-between">
+                  <span>Resolution:</span>
+                  <span className="font-medium text-gray-800">
+                    {videoAnalysis.inputWidth}×{videoAnalysis.inputHeight}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Duration:</span>
+                  <span className="font-medium text-gray-800">
+                    {Math.round(videoAnalysis.duration)}s
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>FPS:</span>
+                  <span className="font-medium text-gray-800">
+                    {videoAnalysis.inputFramerate}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Output Section */}
+            <div className="bg-white/60 rounded-lg p-4 border border-blue-100">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-lg">🎯</span>
+                <span className="font-medium text-blue-700">Target</span>
+              </div>
+              <div className="space-y-2 text-sm text-gray-600">
+                <div className="flex justify-between">
+                  <span>Resolution:</span>
+                  <span className="font-medium text-gray-800">
+                    {settings.resolution}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Bitrate:</span>
+                  <span className="font-medium text-gray-800">
+                    {settings.bitrate}k
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>FPS:</span>
+                  <span className="font-medium text-gray-800">
+                    {settings.framerate}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Scale:</span>
+                  <span className="font-medium text-gray-800">
+                    {videoAnalysis.scaleFactor.toFixed(2)}x
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Predicted File Size */}
+          <div className="bg-white/60 rounded-lg p-4 border border-purple-100 mb-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="text-lg">💾</span>
+                <span className="font-medium text-purple-700">
+                  Estimated Output Size
+                </span>
+              </div>
+              <span className="text-lg font-bold text-purple-800">
+                ~
+                {(() => {
+                  // Predict file size: duration (s) × bitrate (kbps) × 125 bytes/s ÷ 1MB
+                  const sizeMB =
+                    (videoAnalysis.duration * settings.bitrate * 125) /
+                    (1024 * 1024);
+                  return sizeMB < 1
+                    ? `${Math.round(sizeMB * 1024)}KB`
+                    : `${sizeMB.toFixed(1)}MB`;
+                })()}
+              </span>
+            </div>
+          </div>
+
+          {/* FFmpeg Command */}
+          {ffmpegCommand && (
+            <div className="bg-slate-900 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-sm">⚙️</span>
+                <span className="font-medium text-gray-300 text-sm">
+                  Command
+                </span>
+              </div>
+              <div className="text-green-400 text-xs font-mono break-all whitespace-pre-wrap leading-relaxed">
+                {ffmpegCommand}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
-      <Button onClick={transcode} disabled={isTranscoding} className="w-full">
+      <Button
+        onClick={transcode}
+        disabled={isTranscoding || !videoAnalysis}
+        className="w-full"
+      >
         {isTranscoding ? 'Transcoding...' : 'Start Transcoding'}
       </Button>
 
@@ -274,8 +418,54 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
         </div>
       )}
 
-      <div className="border max-h-24 p-2 rounded-md bg-slate-900 text-white overflow-y-auto text-xs font-mono">
-        {error && <div className="text-red-400 font-bold mt-2">{error}</div>}
+      {/* ✅ UPDATED: FFmpeg Logs Display with 240px max height and scrolling */}
+      <div className="border border-slate-600 max-h-[240px] p-3 rounded-md bg-slate-900 text-white overflow-y-auto text-xs font-mono space-y-1">
+        <div className="flex items-center justify-between mb-2 sticky top-0 bg-slate-900 pb-1 border-b border-slate-700">
+          <span className="text-slate-300 font-medium">Logs</span>
+          {logMessages.length > 0 && (
+            <button
+              onClick={() => setLogMessages([])}
+              className="text-slate-400 hover:text-white text-xs px-2 py-1 rounded hover:bg-slate-700 transition-colors"
+            >
+              Clear
+            </button>
+          )}
+        </div>
+
+        {/* FFmpeg Logs */}
+        {logMessages.length > 0 ? (
+          <div className="space-y-0.5">
+            {logMessages.map((msg, index) => (
+              <div
+                key={index}
+                className={`text-xs leading-relaxed ${
+                  msg.includes('error') || msg.includes('Error')
+                    ? 'text-red-400'
+                    : msg.includes('warning') || msg.includes('Warning')
+                    ? 'text-yellow-400'
+                    : msg.includes('[info]') || msg.includes('frame=')
+                    ? 'text-blue-300'
+                    : 'text-gray-300'
+                }`}
+              >
+                {msg}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-slate-500 text-center py-4">
+            {isTranscoding
+              ? 'Waiting for FFmpeg output...'
+              : 'No logs yet. Start transcoding to see FFmpeg output.'}
+          </div>
+        )}
+
+        {/* Error Messages */}
+        {error && (
+          <div className="text-red-400 font-bold mt-3 p-2 bg-red-900/20 rounded border border-red-700">
+            ❌ {error}
+          </div>
+        )}
       </div>
 
       {outputUrl && (

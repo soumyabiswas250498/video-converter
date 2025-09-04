@@ -14,6 +14,8 @@ const inter = Inter({ subsets: ['latin'] });
 
 interface VideoProperties {
   aspectRatio: number;
+  width: number; // NEW: Added width
+  height: number; // NEW: Added height
 }
 
 export default function Home() {
@@ -35,9 +37,14 @@ export default function Home() {
     video.src = url;
 
     video.onloadedmetadata = () => {
-      // Only get aspect ratio from browser, let FFmpeg handle audio detection
+      // ✅ NOW CAPTURING width and height for downscaling logic
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+
       setVideoProps({
-        aspectRatio: video.videoWidth / video.videoHeight,
+        aspectRatio: width / height,
+        width: width, // NEW: Store actual dimensions
+        height: height, // NEW: Store actual dimensions
       });
       URL.revokeObjectURL(url);
     };
@@ -54,7 +61,7 @@ export default function Home() {
     <main
       className={`flex min-h-screen flex-col items-center p-8 ${inter.className}`}
     >
-      <div className="w-full max-w-md">
+      <div className="w-full max-w-xl">
         <div className="text-center">
           <h1 className="text-3xl font-bold mb-2">Video Transcoder</h1>
           <p className="text-slate-500 mb-8">
@@ -73,6 +80,12 @@ export default function Home() {
               <p className="text-xs text-slate-500">
                 Size: {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB
               </p>
+              {/* ✅ SHOW input resolution for user reference */}
+              {videoProps && (
+                <p className="text-xs text-slate-500">
+                  Resolution: {videoProps.width}X{videoProps.height}
+                </p>
+              )}
               <div className="mt-4 rounded-lg overflow-hidden">
                 <VideoThumbnail file={selectedFile} />
               </div>
@@ -81,6 +94,8 @@ export default function Home() {
             {videoProps && (
               <OutputSettingsMenu
                 aspectRatio={videoProps.aspectRatio}
+                inputWidth={videoProps.width} // ✅ PASS input width
+                inputHeight={videoProps.height} // ✅ PASS input height
                 onChange={setOutputSettings}
               />
             )}

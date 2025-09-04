@@ -21,26 +21,62 @@ export interface OutputSettings {
 
 interface OutputSettingsMenuProps {
   aspectRatio: number;
+  inputWidth: number; // NEW: Need input dimensions
+  inputHeight: number; // NEW: Need input dimensions
   onChange: (settings: OutputSettings) => void;
 }
 
-const generateResolutionOptions = (aspectRatio: number) => {
+interface ResolutionOption {
+  label: string;
+  width: number;
+  height: number;
+  bitrate: number; // NEW: Auto-suggested bitrate
+}
+
+const generateResolutionOptions = (
+  aspectRatio: number,
+  inputWidth: number,
+  inputHeight: number
+): ResolutionOption[] => {
   const standardHeights = [240, 360, 480, 720, 1080];
-  const options: { label: string; width: number; height: number }[] = [];
+  const options: ResolutionOption[] = [];
+
   standardHeights.forEach(h => {
-    const w = Math.round((h * aspectRatio) / 2) * 2;
-    options.push({ label: `${w}x${h}`, width: w, height: h });
+    const w = Math.round((h * aspectRatio) / 2) * 2; // Ensure even width
+
+    // ✅ ONLY INCLUDE if it's downscaling or same size (no upscaling)
+    if (h <= inputHeight && w <= inputWidth) {
+      // ✅ AUTO-MATCH bitrate based on resolution height
+      let suggestedBitrate: number;
+      if (h <= 360) {
+        suggestedBitrate = 800;
+      } else if (h <= 480) {
+        suggestedBitrate = 1200;
+      } else if (h <= 720) {
+        suggestedBitrate = 2500;
+      } else {
+        suggestedBitrate = 4500; // 1080p
+      }
+
+      options.push({
+        label: `${w}x${h}`,
+        width: w,
+        height: h,
+        bitrate: suggestedBitrate,
+      });
+    }
   });
+
   return options;
 };
 
 export function OutputSettingsMenu({
   aspectRatio,
+  inputWidth,
+  inputHeight,
   onChange,
 }: OutputSettingsMenuProps) {
-  const [resolutions, setResolutions] = useState<
-    { label: string; width: number; height: number }[]
-  >([]);
+  const [resolutions, setResolutions] = useState<ResolutionOption[]>([]);
   const [settings, setSettings] = useState<OutputSettings>({
     resolution: '',
     framerate: 24,
@@ -49,18 +85,26 @@ export function OutputSettingsMenu({
   });
 
   useEffect(() => {
-    const options = generateResolutionOptions(aspectRatio);
+    const options = generateResolutionOptions(
+      aspectRatio,
+      inputWidth,
+      inputHeight
+    );
     setResolutions(options);
-    const defaultResolution = options[options.length - 1]?.label || '';
-    const initialSettings: OutputSettings = {
-      resolution: defaultResolution,
-      framerate: 24,
-      bitrate: 2000,
-      audioMono: false,
-    };
-    setSettings(initialSettings);
-    onChange(initialSettings);
-  }, [aspectRatio, onChange]);
+
+    // Default to highest available resolution (but still downscaling)
+    const defaultResolution = options[options.length - 1];
+    if (defaultResolution) {
+      const initialSettings: OutputSettings = {
+        resolution: defaultResolution.label,
+        framerate: 20,
+        bitrate: defaultResolution.bitrate, // ✅ AUTO-SET bitrate
+        audioMono: false,
+      };
+      setSettings(initialSettings);
+      onChange(initialSettings);
+    }
+  }, [aspectRatio, inputWidth, inputHeight, onChange]);
 
   const handleSettingChange = (
     key: keyof OutputSettings,
@@ -71,15 +115,29 @@ export function OutputSettingsMenu({
     onChange(newSettings);
   };
 
+  const handleResolutionChange = (resolutionLabel: string) => {
+    // ✅ AUTO-UPDATE bitrate when resolution changes
+    const selectedRes = resolutions.find(r => r.label === resolutionLabel);
+    if (selectedRes) {
+      const newSettings = {
+        ...settings,
+        resolution: resolutionLabel,
+        bitrate: selectedRes.bitrate, // Auto-set matching bitrate
+      };
+      setSettings(newSettings);
+      onChange(newSettings);
+    }
+  };
+
   return (
     <div className="space-y-4 mt-6">
       <h3 className="text-lg font-semibold">Output Settings</h3>
 
       <div className="space-y-2">
-        <Label htmlFor="resolution">Resolution</Label>
+        <Label htmlFor="resolution">Resolution (Downscaling Only)</Label>
         <Select
           value={settings.resolution}
-          onValueChange={value => handleSettingChange('resolution', value)}
+          onValueChange={handleResolutionChange}
         >
           <SelectTrigger id="resolution">
             <SelectValue placeholder="Select resolution" />
@@ -87,11 +145,16 @@ export function OutputSettingsMenu({
           <SelectContent>
             {resolutions.map(res => (
               <SelectItem key={res.label} value={res.label}>
-                {res.label} ({res.height}p)
+                {res.label} ({res.height}p) - {res.bitrate}k bitrate
               </SelectItem>
             ))}
           </SelectContent>
         </Select>
+        {resolutions.length === 0 && (
+          <p className="text-sm text-slate-500">
+            No downscaling options available (input resolution too small)
+          </p>
+        )}
       </div>
 
       <div className="space-y-2">
@@ -106,7 +169,10 @@ export function OutputSettingsMenu({
             <SelectValue placeholder="Select framerate" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="15">15 fps</SelectItem>
+            <SelectItem value="16">16 fps</SelectItem>
+            <SelectItem value="18">18 fps</SelectItem>
+            <SelectItem value="20">20 fps</SelectItem>
+            <SelectItem value="22">22 fps</SelectItem>
             <SelectItem value="24">24 fps</SelectItem>
           </SelectContent>
         </Select>
@@ -121,11 +187,13 @@ export function OutputSettingsMenu({
           onChange={e =>
             handleSettingChange('bitrate', parseInt(e.target.value, 10) || 0)
           }
-          placeholder="e.g., 2000"
+          placeholder="Auto-set based on resolution"
         />
+        <p className="text-xs text-slate-500">
+          Bitrate auto-updates when resolution changes, but you can override it
+        </p>
       </div>
 
-      {/* Always show audio options - let FFmpeg determine if audio exists */}
       <div className="flex items-center space-x-2 pt-2">
         <Checkbox
           id="audioMono"
@@ -134,7 +202,9 @@ export function OutputSettingsMenu({
             handleSettingChange('audioMono', !!checked)
           }
         />
-        <Label htmlFor="audioMono">Convert Audio to Mono (if present)</Label>
+        <Label className="pl-2" htmlFor="audioMono">
+          Convert Audio to Mono
+        </Label>
       </div>
     </div>
   );
