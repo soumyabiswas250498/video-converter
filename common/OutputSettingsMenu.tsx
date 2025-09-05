@@ -129,6 +129,8 @@ export function OutputSettingsMenu({
     }
   };
 
+  console.log('***test');
+
   return (
     <div className="space-y-4 mt-6">
       <h3 className="text-lg font-semibold">Output Settings</h3>

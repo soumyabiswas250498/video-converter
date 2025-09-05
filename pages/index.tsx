@@ -9,13 +9,16 @@ import {
   OutputSettings,
 } from '@/common/OutputSettingsMenu';
 import { Transcoder } from '@/common/Transcoder';
+import { SingleThreadedTranscoder } from '@/common/SingleThreadedTranscoder';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Label } from '@/components/ui/label';
 
 const inter = Inter({ subsets: ['latin'] });
 
 interface VideoProperties {
   aspectRatio: number;
-  width: number; // NEW: Added width
-  height: number; // NEW: Added height
+  width: number;
+  height: number;
 }
 
 export default function Home() {
@@ -23,6 +26,9 @@ export default function Home() {
   const [videoProps, setVideoProps] = useState<VideoProperties | null>(null);
   const [outputSettings, setOutputSettings] = useState<OutputSettings | null>(
     null
+  );
+  const [transcoderMode, setTranscoderMode] = useState<'multi' | 'single'>(
+    'multi'
   );
 
   useEffect(() => {
@@ -37,14 +43,12 @@ export default function Home() {
     video.src = url;
 
     video.onloadedmetadata = () => {
-      // ✅ NOW CAPTURING width and height for downscaling logic
       const width = video.videoWidth;
       const height = video.videoHeight;
-
       setVideoProps({
         aspectRatio: width / height,
-        width: width, // NEW: Store actual dimensions
-        height: height, // NEW: Store actual dimensions
+        width: width,
+        height: height,
       });
       URL.revokeObjectURL(url);
     };
@@ -54,8 +58,22 @@ export default function Home() {
       setVideoProps(null);
     };
 
-    return () => URL.revokeObjectURL(url);
+    return () => {
+      if (url) {
+        URL.revokeObjectURL(url);
+      }
+    };
   }, [selectedFile]);
+
+  // Automatically switch to single-threaded if SharedArrayBuffer is not supported
+  useEffect(() => {
+    if (typeof SharedArrayBuffer === 'undefined') {
+      console.warn(
+        'SharedArrayBuffer not supported, defaulting to single-threaded mode.'
+      );
+      setTranscoderMode('single');
+    }
+  }, []);
 
   return (
     <main
@@ -80,10 +98,9 @@ export default function Home() {
               <p className="text-xs text-slate-500">
                 Size: {(selectedFile.size / (1024 * 1024)).toFixed(2)} MB
               </p>
-              {/* ✅ SHOW input resolution for user reference */}
               {videoProps && (
                 <p className="text-xs text-slate-500">
-                  Resolution: {videoProps.width}X{videoProps.height}
+                  Resolution: {videoProps.width}×{videoProps.height}
                 </p>
               )}
               <div className="mt-4 rounded-lg overflow-hidden">
@@ -91,17 +108,75 @@ export default function Home() {
               </div>
             </div>
 
+            {/* --- Transcoder Mode Toggle --- */}
+            <div className="p-4 border rounded-lg bg-slate-50">
+              <Label className="font-semibold">Transcoder Mode</Label>
+              <RadioGroup
+                value={transcoderMode}
+                onValueChange={(value: 'multi' | 'single') =>
+                  setTranscoderMode(value)
+                }
+                className="mt-2 grid grid-cols-2 gap-4"
+              >
+                <div>
+                  <RadioGroupItem
+                    value="multi"
+                    id="multi-threaded"
+                    className="peer sr-only"
+                  />
+                  <Label
+                    htmlFor="multi-threaded"
+                    className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary [&:has([data-state=checked])]:border-primary"
+                  >
+                    🚀 Multi-threaded
+                    <span className="text-xs text-slate-500 mt-1">
+                      Faster, requires modern browser
+                    </span>
+                  </Label>
+                </div>
+                <div>
+                  <RadioGroupItem
+                    value="single"
+                    id="single-threaded"
+                    className="peer sr-only"
+                  />
+                  <Label
+                    htmlFor="single-threaded"
+                    className="flex flex-col items-center justify-between rounded-md border-2 border-muted bg-popover p-4 hover:bg-accent hover:text-accent-foreground peer-data-[state=checked]:border-primary [&:has([data-state=checked])]:border-primary"
+                  >
+                    🐢 Single-threaded
+                    <span className="text-xs text-slate-500 mt-1">
+                      More compatible, stable
+                    </span>
+                  </Label>
+                </div>
+              </RadioGroup>
+            </div>
+
             {videoProps && (
               <OutputSettingsMenu
                 aspectRatio={videoProps.aspectRatio}
-                inputWidth={videoProps.width} // ✅ PASS input width
-                inputHeight={videoProps.height} // ✅ PASS input height
+                inputWidth={videoProps.width}
+                inputHeight={videoProps.height}
                 onChange={setOutputSettings}
               />
             )}
 
+            {/* --- Conditional Rendering of Transcoder --- */}
             {outputSettings && (
-              <Transcoder inputFile={selectedFile} settings={outputSettings} />
+              <>
+                {transcoderMode === 'multi' ? (
+                  <Transcoder
+                    inputFile={selectedFile}
+                    settings={outputSettings}
+                  />
+                ) : (
+                  <SingleThreadedTranscoder
+                    inputFile={selectedFile}
+                    settings={outputSettings}
+                  />
+                )}
+              </>
             )}
           </div>
         )}
