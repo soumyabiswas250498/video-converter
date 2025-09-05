@@ -1,6 +1,6 @@
-import React from "react";
-import { VideoAnalysis } from "./Transcoder";
-import { OutputSettings } from "./OutputSettingsMenu";
+import React from 'react';
+import { VideoAnalysis } from './Transcoder';
+import { OutputSettings } from './OutputSettingsMenu';
 
 interface IProps {
   videoAnalysis: VideoAnalysis;
@@ -21,7 +21,7 @@ function SourceTargetSection({ videoAnalysis, settings }: IProps) {
             <div className="flex justify-between">
               <span>Resolution:</span>
               <span className="font-medium text-gray-800">
-                {videoAnalysis.inputWidth}×{videoAnalysis.inputHeight}
+                {videoAnalysis.inputWidth}X{videoAnalysis.inputHeight}
               </span>
             </div>
             <div className="flex justify-between">

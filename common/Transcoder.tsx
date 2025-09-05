@@ -23,6 +23,23 @@ export interface VideoAnalysis {
   inputFramerate: number;
 }
 
+function calcTimeoutPerHalfPercent(
+  analysis: VideoAnalysis,
+  settings: OutputSettings
+) {
+  const segmentLength = analysis.duration * 0.005; // in seconds
+
+  const inputPixels = analysis.inputWidth * analysis.inputHeight;
+  const [outW, outH] = settings.resolution.split('x').map(Number);
+  const outputPixels = outW * outH;
+  const scaleFactor = outputPixels / inputPixels;
+
+  // expected time proportional to segmentLength × scaleFactor
+  const expectedSeconds = segmentLength * Math.max(1, scaleFactor);
+
+  return expectedSeconds * 4 * 1000; // apply 4x tolerance, convert ms
+}
+
 export function Transcoder({ inputFile, settings }: TranscoderProps) {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isTranscoding, setIsTranscoding] = useState(false);
@@ -35,7 +52,23 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
   const [ffmpegCommand, setFfmpegCommand] = useState<string>('');
   const [logMessages, setLogMessages] = useState<string[]>([]); // ✅ NEW: Store FFmpeg logs
   const ffmpegRef = useRef(new FFmpeg());
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const duration = videoAnalysis
+    ? calcTimeoutPerHalfPercent(videoAnalysis, settings)
+    : 60;
+
+  useEffect(() => {
+    if (isTranscoding) {
+      const timeOut = setTimeout(() => {
+        setError('FFmpeg appears stuck. Try with single thread transcoding.');
+        setIsTranscoding(false);
+      }, duration);
+
+      return () => {
+        clearTimeout(timeOut);
+      };
+    }
+  }, [duration, logMessages.length, isTranscoding]);
 
   const load = async () => {
     const ffmpeg = ffmpegRef.current;
@@ -46,15 +79,10 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
       setLogMessages(prev => [...prev, message]);
     });
 
-    ffmpeg.on('progress', ({ progress }) => {
-      if (progress >= 0 && progress <= 1) {
-        console.log(`[FFmpeg Progress]: ${(progress * 100).toFixed(2)}%`);
-        setProgress(progress * 100);
-
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
+    ffmpeg.on('progress', ({ progress: progressFloat }) => {
+      if (progressFloat >= 0 && progressFloat <= 1) {
+        console.log(`[FFmpeg Progress]: ${(progressFloat * 100).toFixed(2)}%`);
+        setProgress(progressFloat * 100);
       }
     });
 
@@ -83,11 +111,6 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
 
   useEffect(() => {
     load();
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
   }, []);
 
   // ✅ Analyze video whenever file or settings change
@@ -197,24 +220,6 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
       await ffmpeg.writeFile(inputFilename, await fetchFile(inputFile));
       console.log('[FFmpeg] Input file written to virtual filesystem');
 
-      const processingMultiplier =
-        videoAnalysis.scaleFactor > 2.5
-          ? 8
-          : videoAnalysis.scaleFactor > 1.5
-          ? 6
-          : 4;
-      const baseTimeout = 120000;
-      const timeoutDuration = Math.min(
-        videoAnalysis.duration * processingMultiplier * 1000 + baseTimeout,
-        600000
-      );
-
-      console.log(
-        `[FFmpeg] Setting timeout: ${Math.round(
-          timeoutDuration / 1000
-        )}s for ${Math.round(videoAnalysis.duration)}s video`
-      );
-
       const args = [
         '-i',
         inputFilename,
@@ -236,26 +241,7 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
 
       console.log('[FFmpeg] Command arguments:', args);
 
-      const startTimeout = () => {
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => {
-          console.log(
-            `[FFmpeg] Timeout after ${Math.round(timeoutDuration / 1000)}s`
-          );
-          setError(
-            `Processing timeout. Try a shorter video or lower quality settings.`
-          );
-          setIsTranscoding(false);
-        }, timeoutDuration);
-      };
-
-      startTimeout();
       await ffmpeg.exec(args);
-
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
 
       console.log('[FFmpeg] Transcoding completed successfully');
 
@@ -267,10 +253,6 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
       );
       setOutputUrl(url);
     } catch (err) {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-        timeoutRef.current = null;
-      }
       console.error('[FFmpeg Error]:', err);
       setError(
         'Transcoding failed. Try reducing video length or quality settings.'

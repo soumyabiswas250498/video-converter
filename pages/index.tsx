@@ -9,8 +9,8 @@ import {
   OutputSettings,
 } from '@/common/OutputSettingsMenu';
 import { Transcoder } from '@/common/Transcoder';
-import { SingleThreadedTranscoder } from '@/common/SingleThreadedTranscoder';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { SingleThreadedTranscoder } from '@/common/SingleThreadedTranscoder'; // Import the new single-threaded component
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'; // Assuming you use shadcn/ui
 import { Label } from '@/components/ui/label';
 
 const inter = Inter({ subsets: ['latin'] });
@@ -108,6 +108,15 @@ export default function Home() {
               </div>
             </div>
 
+            {videoProps && (
+              <OutputSettingsMenu
+                aspectRatio={videoProps.aspectRatio}
+                inputWidth={videoProps.width}
+                inputHeight={videoProps.height}
+                onChange={setOutputSettings}
+              />
+            )}
+
             {/* --- Transcoder Mode Toggle --- */}
             <div className="p-4 border rounded-lg bg-slate-50">
               <Label className="font-semibold">Transcoder Mode</Label>
@@ -152,15 +161,6 @@ export default function Home() {
                 </div>
               </RadioGroup>
             </div>
-
-            {videoProps && (
-              <OutputSettingsMenu
-                aspectRatio={videoProps.aspectRatio}
-                inputWidth={videoProps.width}
-                inputHeight={videoProps.height}
-                onChange={setOutputSettings}
-              />
-            )}
 
             {/* --- Conditional Rendering of Transcoder --- */}
             {outputSettings && (

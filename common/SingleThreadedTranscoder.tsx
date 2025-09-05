@@ -1,15 +1,16 @@
-"use client";
+'use client';
 
-import { useState, useRef, useEffect } from "react";
-import { FFmpeg } from "@ffmpeg/ffmpeg";
-import { fetchFile, toBlobURL } from "@ffmpeg/util";
-import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
-import { OutputSettings } from "./OutputSettingsMenu";
-import { Label } from "@/components/ui/label";
-import SourceTargetSection from "./SourceTargetSection";
-import TranscodingFeed from "./TranscodingFeed";
+import { useState, useRef, useEffect } from 'react';
+import { FFmpeg } from '@ffmpeg/ffmpeg';
+import { fetchFile, toBlobURL } from '@ffmpeg/util';
+import { Button } from '@/components/ui/button';
+import { Progress } from '@/components/ui/progress';
+import { OutputSettings } from './OutputSettingsMenu';
+import { Label } from '@/components/ui/label';
+import SourceTargetSection from './SourceTargetSection';
+import TranscodingFeed from './TranscodingFeed';
 
+// Interfaces
 interface TranscoderProps {
   inputFile: File;
   settings: OutputSettings;
@@ -23,6 +24,24 @@ export interface VideoAnalysis {
   inputFramerate: number;
 }
 
+// Helper function to calculate adaptive timeout
+const calcTimeoutPerHalfPercent = (
+  analysis: VideoAnalysis,
+  settings: OutputSettings
+): number => {
+  const segmentLength = analysis.duration * 0.005;
+  const inputPixels = analysis.inputWidth * analysis.inputHeight;
+  const [outW, outH] = settings.resolution.split('x').map(Number);
+  const outputPixels = outW * outH || 1;
+  const scaleRatio = inputPixels / outputPixels;
+
+  const complexityFactor = Math.max(1, scaleRatio);
+  const expectedSeconds = segmentLength * complexityFactor;
+
+  const timeoutMs = expectedSeconds * 8 * 1000;
+  return Math.max(10000, Math.min(timeoutMs, 120000)); // Clamp between 10s and 90s
+};
+
 export function SingleThreadedTranscoder({
   inputFile,
   settings,
@@ -35,30 +54,25 @@ export function SingleThreadedTranscoder({
   const [videoAnalysis, setVideoAnalysis] = useState<VideoAnalysis | null>(
     null
   );
-  const [ffmpegCommand, setFfmpegCommand] = useState<string>("");
+  const [ffmpegCommand, setFfmpegCommand] = useState<string>('');
   const [logMessages, setLogMessages] = useState<string[]>([]);
+
   const ffmpegRef = useRef(new FFmpeg());
-  const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const load = async () => {
     const ffmpeg = ffmpegRef.current;
-    // --- KEY CHANGE: Use the single-threaded core ---
-    const baseURL = "https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd";
+    const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
 
-    ffmpeg.on("log", ({ message }) => {
-      console.log("[FFmpeg ST Log]:", message);
-      setLogMessages((prev) => [...prev, message]);
+    ffmpeg.on('log', ({ message }) => {
+      console.log('[FFmpeg ST Log]:', message);
+      setLogMessages(prev => [...prev, message]);
     });
 
-    ffmpeg.on("progress", ({ progress }) => {
-      if (progress >= 0 && progress <= 1) {
-        console.log(`[FFmpeg ST Progress]: ${(progress * 100).toFixed(2)}%`);
-        setProgress(progress * 100);
+    ffmpeg.on('progress', ({ progress: progressFloat }) => {
+      console.log(progressFloat, isTranscoding, '***p');
 
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
+      if (progressFloat >= 0 && progressFloat <= 1) {
+        setProgress(progressFloat * 100);
       }
     });
 
@@ -66,91 +80,71 @@ export function SingleThreadedTranscoder({
       await ffmpeg.load({
         coreURL: await toBlobURL(
           `${baseURL}/ffmpeg-core.js`,
-          "text/javascript"
+          'text/javascript'
         ),
         wasmURL: await toBlobURL(
           `${baseURL}/ffmpeg-core.wasm`,
-          "application/wasm"
+          'application/wasm'
         ),
-        // --- KEY CHANGE: workerURL is not needed for single-threaded version ---
       });
       setIsLoaded(true);
-      console.log("[FFmpeg] Loaded SINGLE-THREADED core successfully");
     } catch (err) {
-      console.error("[FFmpeg ST Load Error]:", err);
-      setError("Failed to load FFmpeg (single-threaded)");
+      setError('Failed to load FFmpeg (single-threaded)');
     }
   };
 
   useEffect(() => {
     load();
-    return () => {
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
-      }
-    };
   }, []);
 
   useEffect(() => {
     const analyzeVideo = async () => {
       if (!inputFile || !settings.resolution) return;
       try {
-        const video = document.createElement("video");
+        const video = document.createElement('video');
         const url = URL.createObjectURL(inputFile);
-        video.preload = "metadata";
+        video.preload = 'metadata';
         video.src = url;
 
         const analysis = await new Promise<VideoAnalysis>((resolve, reject) => {
           video.onloadedmetadata = () => {
-            const inputWidth = video.videoWidth;
-            const inputHeight = video.videoHeight;
-            const duration = video.duration;
-            const inputFramerate = 30; // Default fallback
-
-            const [outputWidth, outputHeight] = settings.resolution
-              .split("x")
-              .map(Number);
-            const scaleFactorX = inputWidth / outputWidth;
-            const scaleFactorY = inputHeight / outputHeight;
-            const maxScaleFactor = Math.max(scaleFactorX, scaleFactorY);
-
             URL.revokeObjectURL(url);
             resolve({
-              inputWidth,
-              inputHeight,
-              scaleFactor: maxScaleFactor,
-              duration,
-              inputFramerate,
+              inputWidth: video.videoWidth,
+              inputHeight: video.videoHeight,
+              duration: video.duration,
+              inputFramerate: 30,
+              scaleFactor: Math.max(
+                video.videoWidth / parseInt(settings.resolution.split('x')[0]),
+                video.videoHeight / parseInt(settings.resolution.split('x')[1])
+              ),
             });
           };
-          video.onerror = () => reject(new Error("Failed to analyze video"));
+          video.onerror = () => reject(new Error('Failed to analyze video'));
         });
-
         setVideoAnalysis(analysis);
-
         const args = [
-          "-i",
-          `input.${inputFile.name.split(".").pop() || "mp4"}`,
-          "-c:v",
-          "libx264",
-          "-preset",
-          "ultrafast",
-          "-vf",
-          `scale=${settings.resolution.replace("x", ":")}`,
-          "-r",
+          '-i',
+          `input.${inputFile.name.split('.').pop() || 'mp4'}`,
+          '-c:v',
+          'libx264',
+          '-preset',
+          'ultrafast',
+          '-vf',
+          `scale=${settings.resolution.replace('x', ':')}`,
+          '-r',
           String(settings.framerate),
-          "-b:v",
+          '-b:v',
           `${settings.bitrate}k`,
-          "-c:a",
-          "copy",
-          ...(settings.audioMono ? ["-ac", "1"] : []),
-          "output.mp4",
+          '-c:a',
+          'copy',
+          ...(settings.audioMono ? ['-ac', '1'] : []),
+          'output.mp4',
         ];
-        const commandDisplay = `ffmpeg ${args.join(" ")}`;
-        setFfmpegCommand(commandDisplay);
+        setFfmpegCommand(`ffmpeg ${args.join(' ')}`);
       } catch (err) {
         setVideoAnalysis(null);
-        setFfmpegCommand("");
+        setFfmpegCommand('');
       }
     };
     analyzeVideo();
@@ -159,12 +153,6 @@ export function SingleThreadedTranscoder({
   const transcode = async () => {
     if (!isLoaded || isTranscoding || !videoAnalysis) return;
 
-    const [width, height] = settings.resolution.split("x").map(Number);
-    if (width > 1920 || height > 1080) {
-      setError("Maximum full HD resolution (1920x1080) supported only.");
-      return;
-    }
-
     setIsTranscoding(true);
     setProgress(0);
     setOutputUrl(null);
@@ -172,64 +160,43 @@ export function SingleThreadedTranscoder({
     setLogMessages([]);
 
     const ffmpeg = ffmpegRef.current;
-    const inputFilename = `input.${inputFile.name.split(".").pop() || "tmp"}`;
+    const inputFilename = `input.${inputFile.name.split('.').pop() || 'tmp'}`;
 
     try {
       await ffmpeg.writeFile(inputFilename, await fetchFile(inputFile));
 
-      const processingMultiplier =
-        videoAnalysis.scaleFactor > 2.5
-          ? 8
-          : videoAnalysis.scaleFactor > 1.5
-          ? 6
-          : 4;
-      const baseTimeout = 120000;
-      const timeoutDuration = Math.min(
-        videoAnalysis.duration * processingMultiplier * 1000 + baseTimeout,
-        600000
-      );
-
       const args = [
-        "-i",
+        '-i',
         inputFilename,
-        "-c:v",
-        "libx264",
-        "-preset",
-        "ultrafast",
-        "-vf",
-        `scale=${settings.resolution.replace("x", ":")}`,
-        "-r",
+        '-c:v',
+        'libx264',
+        '-preset',
+        'ultrafast',
+        '-vf',
+        `scale=${settings.resolution.replace('x', ':')}`,
+        '-r',
         String(settings.framerate),
-        "-b:v",
+        '-b:v',
         `${settings.bitrate}k`,
-        "-c:a",
-        "copy",
-        ...(settings.audioMono ? ["-ac", "1"] : []),
-        "output.mp4",
+        '-c:a',
+        'copy',
+        ...(settings.audioMono ? ['-ac', '1'] : []),
+        'output.mp4',
       ];
 
-      const startTimeout = () => {
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => {
-          setError("Processing timeout. The video may be too long or complex.");
-          setIsTranscoding(false);
-        }, timeoutDuration);
-      };
-
-      startTimeout();
       await ffmpeg.exec(args);
 
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      const data = await ffmpeg.readFile("output.mp4");
+      const data = await ffmpeg.readFile('output.mp4');
       const url = URL.createObjectURL(
-        new Blob([new Uint8Array(data as Uint8Array)], { type: "video/mp4" })
+        new Blob([new Uint8Array(data as Uint8Array)], { type: 'video/mp4' })
       );
       setOutputUrl(url);
-    } catch (err) {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      setError("Transcoding failed. The file may be corrupted or unsupported.");
-    } finally {
-      setIsTranscoding(false);
+    } catch (err: any) {
+      if (err.message && !err.message.includes('Transcoding terminated')) {
+        setError(
+          'Transcoding failed. The file may be corrupted or unsupported.'
+        );
+      }
     }
   };
 
@@ -264,8 +231,8 @@ export function SingleThreadedTranscoder({
         className="w-full"
       >
         {isTranscoding
-          ? "Transcoding..."
-          : "Start Transcoding (Single-Threaded)"}
+          ? 'Transcoding...'
+          : 'Start Transcoding (Single-Threaded)'}
       </Button>
       {isTranscoding && (
         <div className="space-y-2">
