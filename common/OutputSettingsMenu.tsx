@@ -11,13 +11,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-
-export interface OutputSettings {
-  resolution: string;
-  framerate: number;
-  bitrate: number;
-  audioMono: boolean;
-}
+import { OutputSettings } from '@/lib/videoAnalysis';
 
 interface OutputSettingsMenuProps {
   aspectRatio: number;
@@ -128,8 +122,6 @@ export function OutputSettingsMenu({
       onChange(newSettings);
     }
   };
-
-  console.log('***test');
 
   return (
     <div className="space-y-4 mt-6">

@@ -1,43 +1,23 @@
 'use client';
-
 import { useState, useRef, useEffect } from 'react';
 import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { OutputSettings } from './OutputSettingsMenu';
 import { Label } from '@/components/ui/label';
 import SourceTargetSection from './SourceTargetSection';
 import TranscodingFeed from './TranscodingFeed';
+import {
+  analyzeVideo,
+  calcTimeoutPerHalfPercent,
+  generateFFmpegCommand,
+  OutputSettings,
+  VideoAnalysis,
+} from '@/lib/videoAnalysis';
 
 interface TranscoderProps {
   inputFile: File;
   settings: OutputSettings;
-}
-
-export interface VideoAnalysis {
-  inputWidth: number;
-  inputHeight: number;
-  scaleFactor: number;
-  duration: number;
-  inputFramerate: number;
-}
-
-function calcTimeoutPerHalfPercent(
-  analysis: VideoAnalysis,
-  settings: OutputSettings
-) {
-  const segmentLength = analysis.duration * 0.005; // in seconds
-
-  const inputPixels = analysis.inputWidth * analysis.inputHeight;
-  const [outW, outH] = settings.resolution.split('x').map(Number);
-  const outputPixels = outW * outH;
-  const scaleFactor = outputPixels / inputPixels;
-
-  // expected time proportional to segmentLength × scaleFactor
-  const expectedSeconds = segmentLength * Math.max(1, scaleFactor);
-
-  return expectedSeconds * 4 * 1000; // apply 4x tolerance, convert ms
 }
 
 export function Transcoder({ inputFile, settings }: TranscoderProps) {
@@ -50,11 +30,11 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
     null
   );
   const [ffmpegCommand, setFfmpegCommand] = useState<string>('');
-  const [logMessages, setLogMessages] = useState<string[]>([]); // ✅ NEW: Store FFmpeg logs
+  const [logMessages, setLogMessages] = useState<string[]>([]);
   const ffmpegRef = useRef(new FFmpeg());
 
   const duration = videoAnalysis
-    ? calcTimeoutPerHalfPercent(videoAnalysis, settings)
+    ? calcTimeoutPerHalfPercent(videoAnalysis, settings, false)
     : 60;
 
   useEffect(() => {
@@ -63,7 +43,6 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
         setError('FFmpeg appears stuck. Try with single thread transcoding.');
         setIsTranscoding(false);
       }, duration);
-
       return () => {
         clearTimeout(timeOut);
       };
@@ -113,82 +92,24 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
     load();
   }, []);
 
-  // ✅ Analyze video whenever file or settings change
+  // ✅ Use the reusable analyzeVideo function
   useEffect(() => {
-    const analyzeVideo = async () => {
+    const performAnalysis = async () => {
       if (!inputFile || !settings.resolution) return;
 
-      console.log('[Video Analysis] Analyzing file and settings...');
+      const analysis = await analyzeVideo(inputFile, settings);
+      setVideoAnalysis(analysis);
 
-      try {
-        const video = document.createElement('video');
-        const url = URL.createObjectURL(inputFile);
-        video.preload = 'metadata';
-        video.src = url;
-
-        const analysis = await new Promise<VideoAnalysis>((resolve, reject) => {
-          video.onloadedmetadata = () => {
-            const inputWidth = video.videoWidth;
-            const inputHeight = video.videoHeight;
-            const duration = video.duration;
-            const inputFramerate = 30; // Default fallback
-
-            const [outputWidth, outputHeight] = settings.resolution
-              .split('x')
-              .map(Number);
-            const scaleFactorX = inputWidth / outputWidth;
-            const scaleFactorY = inputHeight / outputHeight;
-            const maxScaleFactor = Math.max(scaleFactorX, scaleFactorY);
-
-            URL.revokeObjectURL(url);
-            resolve({
-              inputWidth,
-              inputHeight,
-              scaleFactor: maxScaleFactor,
-              duration,
-              inputFramerate,
-            });
-          };
-
-          video.onerror = () => {
-            URL.revokeObjectURL(url);
-            reject(new Error('Failed to analyze video'));
-          };
-        });
-
-        setVideoAnalysis(analysis);
-
-        // ✅ Pre-generate FFmpeg command for display
-        const args = [
-          '-i',
-          `input.${inputFile.name.split('.').pop() || 'mp4'}`,
-          '-c:v',
-          'libx264',
-          '-preset',
-          'ultrafast',
-          '-vf',
-          `scale=${settings.resolution.replace('x', ':')}`,
-          '-r',
-          String(settings.framerate),
-          '-b:v',
-          `${settings.bitrate}k`,
-          '-c:a',
-          'copy',
-          ...(settings.audioMono ? ['-ac', '1'] : []),
-          'output.mp4',
-        ];
-        const commandDisplay = `ffmpeg ${args.join(' ')}`;
+      if (analysis) {
+        // Generate FFmpeg command for display
+        const commandDisplay = generateFFmpegCommand(inputFile, settings);
         setFfmpegCommand(commandDisplay);
-
-        console.log('[Video Analysis] Complete:', analysis);
-      } catch (err) {
-        console.error('[Video Analysis Error]:', err);
-        setVideoAnalysis(null);
+      } else {
         setFfmpegCommand('');
       }
     };
 
-    analyzeVideo();
+    performAnalysis();
   }, [inputFile, settings]);
 
   const transcode = async () => {
@@ -240,9 +161,7 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
       ];
 
       console.log('[FFmpeg] Command arguments:', args);
-
       await ffmpeg.exec(args);
-
       console.log('[FFmpeg] Transcoding completed successfully');
 
       const data = await ffmpeg.readFile('output.mp4');
@@ -276,13 +195,11 @@ export function Transcoder({ inputFile, settings }: TranscoderProps) {
             <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
             <h3 className="font-semibold text-gray-800">Transcoding Preview</h3>
           </div>
-
           {/* Main Info Grid */}
           <SourceTargetSection
             videoAnalysis={videoAnalysis}
             settings={settings}
           />
-
           {/* FFmpeg Command */}
           {ffmpegCommand && (
             <div className="bg-slate-900 rounded-lg p-4 border border-gray-700">

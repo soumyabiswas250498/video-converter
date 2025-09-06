@@ -4,14 +4,12 @@ import { useState, useEffect } from 'react';
 import { Inter } from 'next/font/google';
 import FileInput from '@/common/FileInput';
 import { VideoThumbnail } from '@/common/VideoThumbnail';
-import {
-  OutputSettingsMenu,
-  OutputSettings,
-} from '@/common/OutputSettingsMenu';
+import { OutputSettingsMenu } from '@/common/OutputSettingsMenu';
 import { Transcoder } from '@/common/Transcoder';
 import { SingleThreadedTranscoder } from '@/common/SingleThreadedTranscoder'; // Import the new single-threaded component
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'; // Assuming you use shadcn/ui
 import { Label } from '@/components/ui/label';
+import { OutputSettings } from '@/lib/videoAnalysis';
 
 const inter = Inter({ subsets: ['latin'] });
 

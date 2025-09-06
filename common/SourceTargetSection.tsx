@@ -1,6 +1,5 @@
 import React from 'react';
-import { VideoAnalysis } from './Transcoder';
-import { OutputSettings } from './OutputSettingsMenu';
+import { OutputSettings, VideoAnalysis } from '@/lib/videoAnalysis';
 
 interface IProps {
   videoAnalysis: VideoAnalysis;

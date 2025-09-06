@@ -5,42 +5,23 @@ import { FFmpeg } from '@ffmpeg/ffmpeg';
 import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { OutputSettings } from './OutputSettingsMenu';
+
 import { Label } from '@/components/ui/label';
 import SourceTargetSection from './SourceTargetSection';
 import TranscodingFeed from './TranscodingFeed';
+import {
+  analyzeVideo,
+  calcTimeoutPerHalfPercent,
+  generateFFmpegCommand,
+  OutputSettings,
+  VideoAnalysis,
+} from '@/lib/videoAnalysis';
 
 // Interfaces
 interface TranscoderProps {
   inputFile: File;
   settings: OutputSettings;
 }
-
-export interface VideoAnalysis {
-  inputWidth: number;
-  inputHeight: number;
-  scaleFactor: number;
-  duration: number;
-  inputFramerate: number;
-}
-
-// Helper function to calculate adaptive timeout
-const calcTimeoutPerHalfPercent = (
-  analysis: VideoAnalysis,
-  settings: OutputSettings
-): number => {
-  const segmentLength = analysis.duration * 0.005;
-  const inputPixels = analysis.inputWidth * analysis.inputHeight;
-  const [outW, outH] = settings.resolution.split('x').map(Number);
-  const outputPixels = outW * outH || 1;
-  const scaleRatio = inputPixels / outputPixels;
-
-  const complexityFactor = Math.max(1, scaleRatio);
-  const expectedSeconds = segmentLength * complexityFactor;
-
-  const timeoutMs = expectedSeconds * 8 * 1000;
-  return Math.max(10000, Math.min(timeoutMs, 120000)); // Clamp between 10s and 90s
-};
 
 export function SingleThreadedTranscoder({
   inputFile,
@@ -59,6 +40,24 @@ export function SingleThreadedTranscoder({
 
   const ffmpegRef = useRef(new FFmpeg());
 
+  const duration = videoAnalysis
+    ? calcTimeoutPerHalfPercent(videoAnalysis, settings, false)
+    : 60;
+
+  useEffect(() => {
+    if (isTranscoding) {
+      const timeOut = setTimeout(() => {
+        setError(
+          'FFmpeg appears stuck. Sorry Your browser or device is not supported.'
+        );
+        setIsTranscoding(false);
+      }, duration);
+      return () => {
+        clearTimeout(timeOut);
+      };
+    }
+  }, [duration, logMessages.length, isTranscoding]);
+
   const load = async () => {
     const ffmpeg = ffmpegRef.current;
     const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/umd';
@@ -69,8 +68,6 @@ export function SingleThreadedTranscoder({
     });
 
     ffmpeg.on('progress', ({ progress: progressFloat }) => {
-      console.log(progressFloat, isTranscoding, '***p');
-
       if (progressFloat >= 0 && progressFloat <= 1) {
         setProgress(progressFloat * 100);
       }
@@ -98,56 +95,22 @@ export function SingleThreadedTranscoder({
   }, []);
 
   useEffect(() => {
-    const analyzeVideo = async () => {
+    const performAnalysis = async () => {
       if (!inputFile || !settings.resolution) return;
-      try {
-        const video = document.createElement('video');
-        const url = URL.createObjectURL(inputFile);
-        video.preload = 'metadata';
-        video.src = url;
 
-        const analysis = await new Promise<VideoAnalysis>((resolve, reject) => {
-          video.onloadedmetadata = () => {
-            URL.revokeObjectURL(url);
-            resolve({
-              inputWidth: video.videoWidth,
-              inputHeight: video.videoHeight,
-              duration: video.duration,
-              inputFramerate: 30,
-              scaleFactor: Math.max(
-                video.videoWidth / parseInt(settings.resolution.split('x')[0]),
-                video.videoHeight / parseInt(settings.resolution.split('x')[1])
-              ),
-            });
-          };
-          video.onerror = () => reject(new Error('Failed to analyze video'));
-        });
-        setVideoAnalysis(analysis);
-        const args = [
-          '-i',
-          `input.${inputFile.name.split('.').pop() || 'mp4'}`,
-          '-c:v',
-          'libx264',
-          '-preset',
-          'ultrafast',
-          '-vf',
-          `scale=${settings.resolution.replace('x', ':')}`,
-          '-r',
-          String(settings.framerate),
-          '-b:v',
-          `${settings.bitrate}k`,
-          '-c:a',
-          'copy',
-          ...(settings.audioMono ? ['-ac', '1'] : []),
-          'output.mp4',
-        ];
-        setFfmpegCommand(`ffmpeg ${args.join(' ')}`);
-      } catch (err) {
-        setVideoAnalysis(null);
+      const analysis = await analyzeVideo(inputFile, settings);
+      setVideoAnalysis(analysis);
+
+      if (analysis) {
+        // Generate FFmpeg command for display
+        const commandDisplay = generateFFmpegCommand(inputFile, settings);
+        setFfmpegCommand(commandDisplay);
+      } else {
         setFfmpegCommand('');
       }
     };
-    analyzeVideo();
+
+    performAnalysis();
   }, [inputFile, settings]);
 
   const transcode = async () => {
@@ -196,7 +159,10 @@ export function SingleThreadedTranscoder({
         setError(
           'Transcoding failed. The file may be corrupted or unsupported.'
         );
+        setIsTranscoding(false);
       }
+    } finally {
+      setIsTranscoding(false);
     }
   };
 
